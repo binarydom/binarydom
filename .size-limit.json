@@ -1,0 +1,10 @@
+{
+  "path": "dist/*.js",
+  "limit": "50 kB",
+  "webpack": {
+    "config": "webpack.config.js"
+  },
+  "tracking": {
+    "github": true
+  }
+} 
