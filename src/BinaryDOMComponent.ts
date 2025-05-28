@@ -1,13 +1,13 @@
 import { BinaryDOMNode, BinaryDOMProps } from "./types/BinaryDOMNode";
 
-export abstract class BinaryDOMComponent {
-  protected props: BinaryDOMProps;
-  protected state: any;
+export abstract class BinaryDOMComponent<P = BinaryDOMProps, S = any> {
+  protected props: P;
+  protected state: S;
   protected refs: { [key: string]: any };
 
-  constructor(props: BinaryDOMProps) {
+  constructor(props: P) {
     this.props = props;
-    this.state = {};
+    this.state = {} as S;
     this.refs = {};
   }
 
@@ -32,8 +32,8 @@ export abstract class BinaryDOMComponent {
   // Lifecycle methods
   componentDidMount() {}
   componentWillUnmount() {}
-  componentDidUpdate(prevProps: BinaryDOMProps, prevState: any) {}
-  shouldComponentUpdate(nextProps: BinaryDOMProps, nextState: any): boolean {
+  componentDidUpdate(prevProps: P, prevState: S) {}
+  shouldComponentUpdate(nextProps: P, nextState: S): boolean {
     return true;
   }
 }
