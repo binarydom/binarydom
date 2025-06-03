@@ -178,7 +178,13 @@ export class BinaryDOMRenderer {
   private createDom(fiber: BinaryDOMNode): HTMLElement | Text {
     const dom =
       fiber.type === "text"
-        ? document.createTextNode(fiber.props?.text || fiber.value || "")
+        ? document.createTextNode(
+            typeof fiber.props?.text === "string"
+              ? fiber.props.text
+              : typeof fiber.value === "string"
+              ? fiber.value
+              : ""
+          )
         : document.createElement(fiber.type as string);
 
     if (dom instanceof HTMLElement) {
@@ -197,7 +203,7 @@ export class BinaryDOMRenderer {
       if (key !== "children" && !(key in nextProps)) {
         if (key.startsWith("on")) {
           const eventType = key.toLowerCase().substring(2);
-          dom.removeEventListener(eventType, prevProps[key]);
+          dom.removeEventListener(eventType, prevProps[key] as EventListener);
         } else {
           (dom as any)[key] = "";
         }
@@ -210,9 +216,9 @@ export class BinaryDOMRenderer {
         if (key.startsWith("on")) {
           const eventType = key.toLowerCase().substring(2);
           if (prevProps[key]) {
-            dom.removeEventListener(eventType, prevProps[key]);
+            dom.removeEventListener(eventType, prevProps[key] as EventListener);
           }
-          dom.addEventListener(eventType, nextProps[key]);
+          dom.addEventListener(eventType, nextProps[key] as EventListener);
         } else {
           (dom as any)[key] = nextProps[key];
         }
