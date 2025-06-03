@@ -66,8 +66,8 @@ export class BinaryDOMBenchmark {
 
     for (let i = 0; i < 5; i++) {
       this.renderer.render(element);
-      if (performance.memory) {
-        memoryUsage.push(performance.memory.usedJSHeapSize);
+      if ((performance as any).memory) {
+        memoryUsage.push((performance as any).memory.usedJSHeapSize);
       }
     }
 

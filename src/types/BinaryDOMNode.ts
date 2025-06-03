@@ -39,6 +39,12 @@ export interface BinaryDOMNode {
     updateQueue: any;
     flags: number;
   };
+  alternate?: BinaryDOMNode | null;
+  child?: BinaryDOMNode | null;
+  sibling?: BinaryDOMNode | null;
+  return?: BinaryDOMNode | null;
+  effectTag?: string;
+  dom?: HTMLElement | Text | null;
 }
 
 export interface BinaryDOMOptions {

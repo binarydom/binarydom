@@ -60,7 +60,10 @@ export class BinaryDOMRenderer {
   }
 
   private updateFunctionComponent(fiber: BinaryDOMNode) {
-    const children = [fiber.type(fiber.props)];
+    const children =
+      typeof fiber.type === "function"
+        ? [(fiber.type as (props: any) => BinaryDOMNode)(fiber.props)]
+        : [];
     this.reconcileChildren(fiber, children);
   }
 
@@ -68,7 +71,7 @@ export class BinaryDOMRenderer {
     if (!fiber.dom) {
       fiber.dom = this.createDom(fiber);
     }
-    this.reconcileChildren(fiber, fiber.props.children);
+    this.reconcileChildren(fiber, fiber.props.children || []);
   }
 
   private reconcileChildren(
@@ -85,8 +88,9 @@ export class BinaryDOMRenderer {
 
       const sameType = oldFiber && element && element.type === oldFiber.type;
 
-      if (sameType) {
+      if (sameType && oldFiber) {
         newFiber = {
+          ...oldFiber,
           type: oldFiber.type,
           props: element.props,
           dom: oldFiber.dom,
@@ -97,6 +101,7 @@ export class BinaryDOMRenderer {
       }
       if (element && !sameType) {
         newFiber = {
+          ...element,
           type: element.type,
           props: element.props,
           dom: null,
@@ -117,7 +122,7 @@ export class BinaryDOMRenderer {
       if (index === 0) {
         wipFiber.child = newFiber;
       } else if (element) {
-        prevSibling!.sibling = newFiber;
+        if (prevSibling) prevSibling.sibling = newFiber;
       }
 
       prevSibling = newFiber;
@@ -136,43 +141,49 @@ export class BinaryDOMRenderer {
     if (!fiber) return;
 
     let domParentFiber = fiber.parent;
-    while (!domParentFiber.dom) {
+    while (domParentFiber && !domParentFiber.dom) {
       domParentFiber = domParentFiber.parent!;
     }
+    if (!domParentFiber) return;
     const domParent = domParentFiber.dom;
 
     if (fiber.effectTag === "PLACEMENT" && fiber.dom) {
-      domParent.appendChild(fiber.dom);
+      (domParent as HTMLElement).appendChild(fiber.dom);
     } else if (fiber.effectTag === "UPDATE" && fiber.dom) {
-      this.updateDom(fiber.dom, fiber.alternate!.props, fiber.props);
+      if (fiber.dom instanceof HTMLElement) {
+        this.updateDom(fiber.dom, fiber.alternate!.props, fiber.props);
+      }
     } else if (fiber.effectTag === "DELETION") {
       this.commitDeletion(fiber);
     }
 
-    this.commitWork(fiber.child!);
-    this.commitWork(fiber.sibling!);
+    if (fiber.child) this.commitWork(fiber.child);
+    if (fiber.sibling) this.commitWork(fiber.sibling);
   }
 
   private commitDeletion(fiber: BinaryDOMNode) {
     if (fiber.dom) {
       let domParentFiber = fiber.parent;
-      while (!domParentFiber.dom) {
+      while (domParentFiber && !domParentFiber.dom) {
         domParentFiber = domParentFiber.parent!;
       }
+      if (!domParentFiber) return;
       const domParent = domParentFiber.dom;
-      domParent.removeChild(fiber.dom);
-    } else {
-      this.commitDeletion(fiber.child!);
+      (domParent as HTMLElement).removeChild(fiber.dom);
+    } else if (fiber.child) {
+      this.commitDeletion(fiber.child);
     }
   }
 
-  private createDom(fiber: BinaryDOMNode): HTMLElement {
+  private createDom(fiber: BinaryDOMNode): HTMLElement | Text {
     const dom =
       fiber.type === "text"
-        ? document.createTextNode("")
+        ? document.createTextNode(fiber.props?.text || fiber.value || "")
         : document.createElement(fiber.type as string);
 
-    this.updateDom(dom, {}, fiber.props);
+    if (dom instanceof HTMLElement) {
+      this.updateDom(dom, {}, fiber.props);
+    }
     return dom;
   }
 
@@ -207,5 +218,35 @@ export class BinaryDOMRenderer {
         }
       }
     });
+  }
+
+  public createElement(node: any): HTMLElement | Text {
+    if (node.type === "text") {
+      return document.createTextNode(node.props?.text || node.value || "");
+    }
+    const el = document.createElement(node.tagName || "div");
+    // Set attributes
+    if (node.attributes) {
+      node.attributes.forEach((value: string, key: string) =>
+        el.setAttribute(key, value)
+      );
+    }
+    // Set props
+    if (node.props) {
+      Object.entries(node.props).forEach(([key, value]) => {
+        if (key !== "children" && typeof value !== "function") {
+          try {
+            (el as any)[key] = value;
+          } catch {}
+        }
+      });
+    }
+    // Append children
+    if (node.children) {
+      node.children.forEach((child: any) => {
+        el.appendChild(this.createElement(child) as Node);
+      });
+    }
+    return el;
   }
 }
