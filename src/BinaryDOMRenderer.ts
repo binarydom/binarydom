@@ -63,11 +63,19 @@ export class BinaryDOMRenderer {
   }
 
   private updateFunctionComponent(fiber: BinaryDOMNode): void {
-    const children =
-      typeof fiber.type === "function"
-        ? [(fiber.type as (props: any) => BinaryDOMNode)(fiber.props)]
-        : [];
-    this.reconcileChildren(fiber, children);
+    try {
+      const children =
+        typeof fiber.type === "function"
+          ? [(fiber.type as (props: any) => BinaryDOMNode)(fiber.props)]
+          : [];
+      this.reconcileChildren(fiber, children);
+    } catch (error) {
+      // Optionally, mark this fiber as errored or render a fallback
+      fiber.effectTag = "ERROR";
+      // You could also dispatch a global error event or call a callback here
+      // For now, just log:
+      console.error("Error in function component:", error);
+    }
   }
 
   private updateHostComponent(fiber: BinaryDOMNode): void {
