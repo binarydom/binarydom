@@ -23,10 +23,18 @@ export class BinaryDOMRenderer {
     this.workInProgress = {
       ...element,
       alternate: this.currentRoot,
+      dom: this.currentRoot?.dom || null, // Carry over existing DOM node if updating root
     };
     this.nextUnitOfWork = this.workInProgress;
     this.deletions = [];
-    requestIdleCallback(this.workLoop.bind(this));
+    // Initial render or update, clear pending updates before scheduling
+    this.pendingUpdates = [];
+    this.scheduled = false;
+    this.scheduleWork(this.workLoop.bind(this));
+  }
+
+  private scheduleWork(callback: IdleRequestCallback): void {
+    requestIdleCallback(callback);
   }
 
   private workLoop(deadline: IdleDeadline): void {
@@ -40,7 +48,13 @@ export class BinaryDOMRenderer {
       this.commitRoot();
     }
 
-    requestIdleCallback(this.workLoop.bind(this));
+    // Only schedule the next work loop if there is still work to do
+    if (this.nextUnitOfWork) {
+      this.scheduleWork(this.workLoop.bind(this));
+    } else if (this.pendingUpdates.length > 0) {
+      // If work is done but pending updates exist, commit them
+      this.commitBatchedUpdates();
+    }
   }
 
   private performUnitOfWork(fiber: BinaryDOMNode): BinaryDOMNode | null {
@@ -97,24 +111,42 @@ export class BinaryDOMRenderer {
     let oldFiber = wipFiber.alternate?.child;
     let prevSibling: BinaryDOMNode | null = null;
 
+    // Create a map of old fibers by key for faster lookup
+    const oldFiberMap = new Map<string | number, BinaryDOMNode>();
+    while (oldFiber) {
+      oldFiberMap.set(oldFiber.key || index, oldFiber);
+      oldFiber = oldFiber.sibling;
+      index++; // Use index as a fallback key if key is missing
+    }
+    index = 0; // Reset index for new elements
+
+    oldFiber = wipFiber.alternate?.child; // Reset oldFiber to the start
+
     while (index < elements.length || oldFiber) {
       const element = elements[index];
       let newFiber: BinaryDOMNode | null = null;
 
-      const sameType = oldFiber && element && element.type === oldFiber.type;
+      // Attempt to find a matching old fiber by key, then by type
+      const key = element?.key || index;
+      const matchedOldFiber = oldFiberMap.get(key);
 
-      if (sameType && oldFiber) {
+      const sameType =
+        matchedOldFiber && element && element.type === matchedOldFiber.type;
+
+      if (sameType) {
+        // Found a match, reuse the old fiber's DOM
         newFiber = {
-          ...oldFiber,
-          type: oldFiber.type,
+          ...matchedOldFiber,
+          type: matchedOldFiber.type,
           props: element.props,
-          dom: oldFiber.dom,
+          dom: matchedOldFiber.dom,
           parent: wipFiber,
-          alternate: oldFiber,
+          alternate: matchedOldFiber,
           effectTag: "UPDATE",
         };
-      }
-      if (element && !sameType) {
+        oldFiberMap.delete(key); // Remove from map as it's been matched
+      } else if (element) {
+        // No match or different type, create a new fiber
         newFiber = {
           ...element,
           type: element.type,
@@ -125,31 +157,47 @@ export class BinaryDOMRenderer {
           effectTag: "PLACEMENT",
         };
       }
-      if (oldFiber && !sameType) {
+
+      // If there's an unmatched old fiber at the current index, mark it for deletion
+      if (oldFiber && (!matchedOldFiber || !sameType)) {
         oldFiber.effectTag = "DELETION";
         this.deletions.push(oldFiber);
       }
 
-      if (oldFiber) {
-        oldFiber = oldFiber.sibling;
-      }
-
       if (index === 0) {
         wipFiber.child = newFiber;
-      } else if (element) {
+      } else if (newFiber) {
+        // Use newFiber here as prevSibling should point to it
         if (prevSibling) prevSibling.sibling = newFiber;
       }
 
       prevSibling = newFiber;
       index++;
+
+      // Move to the next old fiber if we didn't match the current one
+      if (oldFiber && (!matchedOldFiber || !sameType)) {
+        oldFiber = oldFiber.sibling; // only advance oldFiber if it wasn't matched by key
+      } else if (oldFiber && matchedOldFiber && sameType) {
+        oldFiber = oldFiber.sibling; // Also advance oldFiber if it was matched to keep pace with index
+      }
+      // Note: If oldFiber was null, we just proceed with new elements
     }
+
+    // Any remaining old fibers in the map were not matched and should be deleted
+    oldFiberMap.forEach((fiberToDel) => {
+      fiberToDel.effectTag = "DELETION";
+      this.deletions.push(fiberToDel);
+    });
   }
 
   private commitRoot(): void {
     this.deletions.forEach(this.commitDeletion.bind(this));
-    this.commitWork(this.workInProgress!.child!);
+    if (this.workInProgress?.child) {
+      this.commitWork(this.workInProgress.child);
+    }
     this.currentRoot = this.workInProgress;
     this.workInProgress = null;
+    this.commitBatchedUpdates(); // Commit all pending DOM updates after tree traversal
   }
 
   private commitWork(fiber: BinaryDOMNode): void {
@@ -159,47 +207,52 @@ export class BinaryDOMRenderer {
     while (domParentFiber && !domParentFiber.dom) {
       domParentFiber = domParentFiber.parent!;
     }
-    if (!domParentFiber) return;
+    if (!domParentFiber?.dom) return; // Check domParentFiber and its dom
     const domParent = domParentFiber.dom;
 
-    if (fiber.effectTag === "PLACEMENT" && fiber.dom) {
-      (domParent as HTMLElement).appendChild(fiber.dom);
-    } else if (fiber.effectTag === "UPDATE" && fiber.dom) {
-      if (fiber.dom instanceof HTMLElement) {
-        this.updateDom(fiber.dom, fiber.alternate!.props, fiber.props);
+    this.scheduleUpdate(() => {
+      if (fiber.effectTag === "PLACEMENT" && fiber.dom) {
+        (domParent as HTMLElement).appendChild(fiber.dom);
+      } else if (fiber.effectTag === "UPDATE" && fiber.dom) {
+        if (fiber.dom instanceof HTMLElement) {
+          this.updateDom(fiber.dom, fiber.alternate!.props, fiber.props);
+        }
+      } else if (fiber.effectTag === "DELETION") {
+        // Deletion handled in commitDeletion
       }
-    } else if (fiber.effectTag === "DELETION") {
-      this.commitDeletion(fiber);
-    }
+    });
 
     if (fiber.child) this.commitWork(fiber.child);
     if (fiber.sibling) this.commitWork(fiber.sibling);
   }
 
   private commitDeletion(fiber: BinaryDOMNode): void {
-    if (fiber.dom) {
-      let domParentFiber = fiber.parent;
-      while (domParentFiber && !domParentFiber.dom) {
-        domParentFiber = domParentFiber.parent!;
+    this.scheduleUpdate(() => {
+      if (fiber.dom) {
+        let domParentFiber = fiber.parent;
+        while (domParentFiber && !domParentFiber.dom) {
+          domParentFiber = domParentFiber.parent!;
+        }
+        if (!domParentFiber?.dom) return; // Check domParentFiber and its dom
+        const domParent = domParentFiber.dom;
+        (domParent as HTMLElement).removeChild(fiber.dom);
+      } else if (fiber.child) {
+        // If no DOM, continue deletion down the tree
+        this.commitDeletion(fiber.child);
       }
-      if (!domParentFiber) return;
-      const domParent = domParentFiber.dom;
-      (domParent as HTMLElement).removeChild(fiber.dom);
-    } else if (fiber.child) {
-      this.commitDeletion(fiber.child);
-    }
+    });
   }
 
   private createDom(fiber: BinaryDOMNode): HTMLElement | Text {
+    const textContent =
+      typeof fiber.props?.text === "string"
+        ? fiber.props.text
+        : typeof fiber.value === "string"
+        ? fiber.value
+        : "";
     const dom =
       fiber.type === "text"
-        ? document.createTextNode(
-            typeof fiber.props?.text === "string"
-              ? fiber.props.text
-              : typeof fiber.value === "string"
-              ? fiber.value
-              : ""
-          )
+        ? document.createTextNode(textContent)
         : document.createElement(fiber.type as string);
 
     if (dom instanceof HTMLElement) {
@@ -207,6 +260,14 @@ export class BinaryDOMRenderer {
       this.updateDom(dom, {}, fiber.props);
       this.domNodeMap.set(dom, fiber);
     }
+
+    // Setup event delegation for this node's event handlers
+    if (dom instanceof HTMLElement && fiber.eventHandlers) {
+      fiber.eventHandlers.forEach((handler, eventType) => {
+        this.setupEventDelegation(eventType);
+      });
+    }
+
     return dom;
   }
 
@@ -215,62 +276,45 @@ export class BinaryDOMRenderer {
     prevProps: BinaryDOMProps,
     nextProps: BinaryDOMProps
   ): void {
-    // Remove old properties
+    // Remove old properties (excluding children and event handlers)
     Object.keys(prevProps).forEach((key) => {
-      if (key !== "children" && !(key in nextProps)) {
-        if (key.startsWith("on")) {
-          const eventType = key.toLowerCase().substring(2);
-          dom.removeEventListener(eventType, prevProps[key] as EventListener);
-        } else {
-          (dom as any)[key] = "";
+      if (key !== "children" && !key.startsWith("on") && !(key in nextProps)) {
+        // For simplicity, just remove attribute if it exists. More complex props need specific handling.
+        if (dom.hasAttribute(key)) {
+          dom.removeAttribute(key);
         }
+        try {
+          (dom as any)[key] = null;
+        } catch {} // Attempt to clear property
       }
     });
 
-    // Set new or changed properties
+    // Set new or changed properties (excluding children and event handlers)
     Object.keys(nextProps).forEach((key) => {
-      if (key !== "children" && prevProps[key] !== nextProps[key]) {
-        if (key.startsWith("on")) {
-          const eventType = key.toLowerCase().substring(2);
-          if (prevProps[key]) {
-            dom.removeEventListener(eventType, prevProps[key] as EventListener);
-          }
-          dom.addEventListener(eventType, nextProps[key] as EventListener);
+      if (
+        key !== "children" &&
+        !key.startsWith("on") &&
+        prevProps[key] !== nextProps[key]
+      ) {
+        // For simplicity, set as attribute if it's not a well-known property that needs special handling.
+        // A more robust implementation would handle style, className, etc. specifically.
+        if (
+          typeof nextProps[key] === "string" ||
+          typeof nextProps[key] === "number"
+        ) {
+          dom.setAttribute(key, String(nextProps[key]));
+        } else if (nextProps[key] === null || nextProps[key] === undefined) {
+          dom.removeAttribute(key);
         } else {
-          (dom as any)[key] = nextProps[key];
-        }
-      }
-    });
-  }
-
-  public createElement(node: any): HTMLElement | Text {
-    if (node.type === "text") {
-      return document.createTextNode(node.props?.text || node.value || "");
-    }
-    const el = document.createElement(node.tagName || "div");
-    // Set attributes
-    if (node.attributes) {
-      node.attributes.forEach((value: string, key: string) =>
-        el.setAttribute(key, value)
-      );
-    }
-    // Set props
-    if (node.props) {
-      Object.entries(node.props).forEach(([key, value]) => {
-        if (key !== "children" && typeof value !== "function") {
+          // Attempt to set as property for complex types
           try {
-            (el as any)[key] = value;
+            (dom as any)[key] = nextProps[key];
           } catch {}
         }
-      });
-    }
-    // Append children
-    if (node.children) {
-      node.children.forEach((child: any) => {
-        el.appendChild(this.createElement(child) as Node);
-      });
-    }
-    return el;
+      }
+    });
+
+    // Event handlers are managed by the delegation system, no direct listeners here
   }
 
   private setupEventDelegation(eventType: string) {
@@ -280,13 +324,19 @@ export class BinaryDOMRenderer {
     this.container.addEventListener(eventType, (event: Event) => {
       let target = event.target as HTMLElement | null;
       while (target && target !== this.container) {
-        const binaryId = target.getAttribute("data-binary-id");
-        if (binaryId) {
-          const node = this.findNodeById(binaryId, this.currentRoot);
-          if (node && node.eventHandlers.has(eventType)) {
-            node.eventHandlers.get(eventType)!(event);
-            break;
-          }
+        // Use WeakMap for faster lookup if possible, fallback to data attribute
+        const node =
+          this.domNodeMap.get(target) ||
+          this.findNodeById(
+            target.getAttribute("data-binary-id") || "",
+            this.currentRoot
+          );
+
+        if (node && node.eventHandlers.has(eventType)) {
+          node.eventHandlers.get(eventType)!(event);
+          // Stop propagation if handler returns false or explicitly calls stopPropagation
+          if ((event as any).isPropagationStopped) break; // Custom flag for stopPropagation
+          if ((event as any)._binarydom_stopPropagation) break; // Another custom flag example
         }
         target = target.parentElement;
       }
@@ -297,10 +347,16 @@ export class BinaryDOMRenderer {
     id: string,
     node: BinaryDOMNode | null
   ): BinaryDOMNode | null {
-    if (!node) return null;
+    if (!node || !id) return null;
+    // Fallback lookup, prefer WeakMap
     if (node.id === id) return node;
-    for (const child of node.children) {
-      const found = this.findNodeById(id, child);
+    // Simple depth-first search - could be optimized with a map during build
+    if (node.child) {
+      const found = this.findNodeById(id, node.child);
+      if (found) return found;
+    }
+    if (node.sibling) {
+      const found = this.findNodeById(id, node.sibling);
       if (found) return found;
     }
     return null;
@@ -311,10 +367,18 @@ export class BinaryDOMRenderer {
     if (!this.scheduled) {
       this.scheduled = true;
       requestAnimationFrame(() => {
-        this.pendingUpdates.forEach((f) => f());
-        this.pendingUpdates = [];
-        this.scheduled = false;
+        this.commitBatchedUpdates();
       });
+    }
+  }
+
+  private commitBatchedUpdates() {
+    this.pendingUpdates.forEach((f) => f());
+    this.pendingUpdates = [];
+    this.scheduled = false;
+    // After committing DOM updates, check if there is still work to do
+    if (this.nextUnitOfWork) {
+      this.scheduleWork(this.workLoop.bind(this));
     }
   }
 }
