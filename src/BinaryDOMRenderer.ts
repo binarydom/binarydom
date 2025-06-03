@@ -200,6 +200,7 @@ export class BinaryDOMRenderer {
         : document.createElement(fiber.type as string);
 
     if (dom instanceof HTMLElement) {
+      dom.setAttribute("data-binary-id", fiber.id);
       this.updateDom(dom, {}, fiber.props);
     }
     return dom;
