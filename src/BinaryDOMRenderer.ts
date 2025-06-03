@@ -12,7 +12,10 @@ export class BinaryDOMRenderer {
     this.container = container;
   }
 
-  public render(element: BinaryDOMNode) {
+  /**
+   * Render a BinaryDOMNode into the container.
+   */
+  public render(element: BinaryDOMNode): void {
     this.workInProgress = {
       ...element,
       alternate: this.currentRoot,
@@ -22,7 +25,7 @@ export class BinaryDOMRenderer {
     requestIdleCallback(this.workLoop.bind(this));
   }
 
-  private workLoop(deadline: IdleDeadline) {
+  private workLoop(deadline: IdleDeadline): void {
     let shouldYield = false;
     while (this.nextUnitOfWork && !shouldYield) {
       this.nextUnitOfWork = this.performUnitOfWork(this.nextUnitOfWork);
@@ -59,7 +62,7 @@ export class BinaryDOMRenderer {
     return null;
   }
 
-  private updateFunctionComponent(fiber: BinaryDOMNode) {
+  private updateFunctionComponent(fiber: BinaryDOMNode): void {
     const children =
       typeof fiber.type === "function"
         ? [(fiber.type as (props: any) => BinaryDOMNode)(fiber.props)]
@@ -67,7 +70,7 @@ export class BinaryDOMRenderer {
     this.reconcileChildren(fiber, children);
   }
 
-  private updateHostComponent(fiber: BinaryDOMNode) {
+  private updateHostComponent(fiber: BinaryDOMNode): void {
     if (!fiber.dom) {
       fiber.dom = this.createDom(fiber);
     }
@@ -77,7 +80,7 @@ export class BinaryDOMRenderer {
   private reconcileChildren(
     wipFiber: BinaryDOMNode,
     elements: BinaryDOMNode[]
-  ) {
+  ): void {
     let index = 0;
     let oldFiber = wipFiber.alternate?.child;
     let prevSibling: BinaryDOMNode | null = null;
@@ -130,14 +133,14 @@ export class BinaryDOMRenderer {
     }
   }
 
-  private commitRoot() {
+  private commitRoot(): void {
     this.deletions.forEach(this.commitDeletion.bind(this));
     this.commitWork(this.workInProgress!.child!);
     this.currentRoot = this.workInProgress;
     this.workInProgress = null;
   }
 
-  private commitWork(fiber: BinaryDOMNode) {
+  private commitWork(fiber: BinaryDOMNode): void {
     if (!fiber) return;
 
     let domParentFiber = fiber.parent;
@@ -161,7 +164,7 @@ export class BinaryDOMRenderer {
     if (fiber.sibling) this.commitWork(fiber.sibling);
   }
 
-  private commitDeletion(fiber: BinaryDOMNode) {
+  private commitDeletion(fiber: BinaryDOMNode): void {
     if (fiber.dom) {
       let domParentFiber = fiber.parent;
       while (domParentFiber && !domParentFiber.dom) {
@@ -197,7 +200,7 @@ export class BinaryDOMRenderer {
     dom: HTMLElement,
     prevProps: BinaryDOMProps,
     nextProps: BinaryDOMProps
-  ) {
+  ): void {
     // Remove old properties
     Object.keys(prevProps).forEach((key) => {
       if (key !== "children" && !(key in nextProps)) {
@@ -255,4 +258,10 @@ export class BinaryDOMRenderer {
     }
     return el;
   }
+}
+
+function isFunctionComponent(
+  node: BinaryDOMNode
+): node is BinaryDOMNode & { type: (props: any) => BinaryDOMNode } {
+  return typeof node.type === "function";
 }
