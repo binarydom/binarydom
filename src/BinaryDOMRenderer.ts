@@ -8,6 +8,9 @@ export class BinaryDOMRenderer {
   private deletions: BinaryDOMNode[] = [];
   private currentRoot: BinaryDOMNode | null = null;
   private delegatedEvents = new Set<string>();
+  private pendingUpdates: (() => void)[] = [];
+  private scheduled = false;
+  private domNodeMap = new WeakMap<HTMLElement, BinaryDOMNode>();
 
   constructor(container: Element) {
     this.container = container;
@@ -202,6 +205,7 @@ export class BinaryDOMRenderer {
     if (dom instanceof HTMLElement) {
       dom.setAttribute("data-binary-id", fiber.id);
       this.updateDom(dom, {}, fiber.props);
+      this.domNodeMap.set(dom, fiber);
     }
     return dom;
   }
@@ -300,6 +304,18 @@ export class BinaryDOMRenderer {
       if (found) return found;
     }
     return null;
+  }
+
+  private scheduleUpdate(fn: () => void) {
+    this.pendingUpdates.push(fn);
+    if (!this.scheduled) {
+      this.scheduled = true;
+      requestAnimationFrame(() => {
+        this.pendingUpdates.forEach((f) => f());
+        this.pendingUpdates = [];
+        this.scheduled = false;
+      });
+    }
   }
 }
 
