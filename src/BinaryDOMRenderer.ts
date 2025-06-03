@@ -7,6 +7,7 @@ export class BinaryDOMRenderer {
   private nextUnitOfWork: BinaryDOMNode | null = null;
   private deletions: BinaryDOMNode[] = [];
   private currentRoot: BinaryDOMNode | null = null;
+  private delegatedEvents = new Set<string>();
 
   constructor(container: Element) {
     this.container = container;
@@ -265,6 +266,39 @@ export class BinaryDOMRenderer {
       });
     }
     return el;
+  }
+
+  private setupEventDelegation(eventType: string) {
+    if (this.delegatedEvents.has(eventType)) return;
+    this.delegatedEvents.add(eventType);
+
+    this.container.addEventListener(eventType, (event: Event) => {
+      let target = event.target as HTMLElement | null;
+      while (target && target !== this.container) {
+        const binaryId = target.getAttribute("data-binary-id");
+        if (binaryId) {
+          const node = this.findNodeById(binaryId, this.currentRoot);
+          if (node && node.eventHandlers.has(eventType)) {
+            node.eventHandlers.get(eventType)!(event);
+            break;
+          }
+        }
+        target = target.parentElement;
+      }
+    });
+  }
+
+  private findNodeById(
+    id: string,
+    node: BinaryDOMNode | null
+  ): BinaryDOMNode | null {
+    if (!node) return null;
+    if (node.id === id) return node;
+    for (const child of node.children) {
+      const found = this.findNodeById(id, child);
+      if (found) return found;
+    }
+    return null;
   }
 }
 
