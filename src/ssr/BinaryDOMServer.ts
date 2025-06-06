@@ -13,7 +13,13 @@ export class BinaryDOMServer {
     return this.instance;
   }
 
-  renderToString(node: BinaryDOMNode): string {
+  /**
+   * Renders a BinaryDOMNode tree to an HTML string.
+   * @param node The root BinaryDOMNode.
+   * @param initialState Optional initial state to embed in the HTML for hydration.
+   * @returns The rendered HTML string.
+   */
+  renderToString(node: BinaryDOMNode, initialState?: any): string {
     const cacheKey = this.generateCacheKey(node);
     if (this.cache.has(cacheKey)) {
       return this.cache.get(cacheKey)!;
@@ -21,18 +27,51 @@ export class BinaryDOMServer {
 
     let html = "";
 
-    switch (node.type) {
-      case "element":
-        html = this.renderElement(node);
-        break;
-      case "text":
-        html = this.escapeHtml(node.value || "");
-        break;
-      case "fragment":
-        html = this.renderChildren(node);
-        break;
-      default:
-        html = "";
+    // Handle function components on the server
+    if (typeof node.type === "function") {
+      try {
+        // Execute the function component
+        const result = (node.type as Function)(node.props);
+        // Recursively render the result
+        if (result) {
+          // Handle potential array returns from function components (like fragments)
+          if (Array.isArray(result)) {
+            html = result.map((child) => this.renderToString(child)).join("");
+          } else {
+            html = this.renderToString(result);
+          }
+        }
+      } catch (error) {
+        console.error(
+          `Error rendering function component ${
+            node.type.name || "anonymous"
+          }:`,
+          error
+        );
+        // Optionally render an error fallback or an empty string
+        html = "<!-- Server Render Error -->";
+      }
+    } else {
+      // Handle host elements
+      switch (node.type) {
+        case "element":
+          html = this.renderElement(node);
+          break;
+        case "text":
+          html = this.escapeHtml(node.value || "");
+          break;
+        case "fragment":
+          html = this.renderChildren(node);
+          break;
+        // No default case here, undefined types will result in empty html
+      }
+    }
+
+    // Embed initial state for hydration
+    if (initialState !== undefined) {
+      html += `<script>window.__BINARYDOM_INITIAL_STATE__ = ${this.escapeHtml(
+        JSON.stringify(initialState)
+      )};</script>`;
     }
 
     this.cache.set(cacheKey, html);

@@ -237,26 +237,32 @@ function createTodoApp(store: TodoStore): BinaryDOMNode {
   ]);
 }
 
-// Initial todos
+// Initial todos (This will be the source of truth for the initial state)
 const initialTodos = [
   { id: "1", text: "Learn Binary DOM", completed: true },
   { id: "2", text: "Build a Todo App", completed: false },
   { id: "3", text: "Implement SSR", completed: false },
 ];
 
-// Create store
-const store = TodoStore.getInstance({
-  todos: initialTodos,
-  filter: "all",
-  inputValue: "",
-});
+// Create store - Initialize with state from server if available
+// In a real app, you'd also hydrate other states (e.g., router, auth)
+const serverInitialState = (window as any).__BINARYDOM_INITIAL_STATE__;
+const store = TodoStore.getInstance(
+  serverInitialState
+    ? { ...serverInitialState }
+    : {
+        todos: initialTodos, // Fallback if no server state
+        filter: "all",
+        inputValue: "",
+      }
+);
 
 // Create the app
 const todoApp = createTodoApp(store);
 
-// Server-side rendering
+// Server-side rendering (Example usage in a Node.js server - commented out)
 const server = BinaryDOMServer.getInstance();
-const html = server.renderToString(todoApp);
+// const html = server.renderToString(todoApp, store.getState()); // Pass the initial state to SSR
 
 // Example Express server implementation
 /*
@@ -264,7 +270,19 @@ import express from 'express';
 const app = express();
 
 app.get('/', (req, res) => {
-  const html = server.renderToString(todoApp);
+  const initialTodos = [
+    { id: "1", text: "Learn Binary DOM", completed: true },
+    { id: "2", text: "Build a Todo App", completed: false },
+    { id: "3", text: "Implement SSR", completed: false },
+  ];
+  // Create a store instance on the server to get the initial state
+  const serverStore = TodoStore.getInstance({ todos: initialTodos, filter: 'all', inputValue: '' });
+  const initialAppState = serverStore.getState();
+
+  // Create the app structure using the server state
+  const todoApp = createTodoApp(serverStore);
+
+  const html = server.renderToString(todoApp, initialAppState); // Pass the state here
   res.send(`
     <!DOCTYPE html>
     <html>
@@ -305,10 +323,6 @@ app.get('/', (req, res) => {
       </head>
       <body>
         <div id="root">${html}</div>
-        <script>
-          // Initial state for hydration
-          window.__INITIAL_STATE__ = ${JSON.stringify(initialTodos)};
-        </script>
         <script src="/client.js"></script>
       </body>
     </html>
@@ -321,13 +335,15 @@ app.listen(3000);
 // Client-side hydration
 const container = document.getElementById("root");
 if (container) {
+  // Use the store instance initialized with server state
   const renderer = new BinaryDOMRenderer(container);
   const hydration = BinaryDOMHydration.getInstance(renderer);
   hydration.hydrate(todoApp, container);
 
-  // Subscribe to store changes
+  // Subscribe to store changes for client-side updates
   store.subscribe(() => {
     const newApp = createTodoApp(store);
+    // Use hydrate for subsequent updates after initial hydration
     hydration.hydrate(newApp, container);
   });
 }
