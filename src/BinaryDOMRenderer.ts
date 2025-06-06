@@ -1,5 +1,36 @@
 import { BinaryDOMNode, BinaryDOMProps, NodeType } from "./types/BinaryDOMNode";
 
+// Priority levels
+const PRIORITY = {
+  IMMEDIATE: 1,
+  USER_BLOCKING: 2,
+  NORMAL: 3,
+  LOW: 4,
+  IDLE: 5,
+} as const;
+type PriorityLevel = (typeof PRIORITY)[keyof typeof PRIORITY];
+
+interface ScheduledUpdate {
+  fiber: BinaryDOMNode;
+  priority: PriorityLevel;
+  callback: () => void;
+}
+
+// Simple priority queue for scheduled updates
+class PriorityQueue {
+  private queue: ScheduledUpdate[] = [];
+  enqueue(update: ScheduledUpdate) {
+    this.queue.push(update);
+    this.queue.sort((a, b) => a.priority - b.priority);
+  }
+  dequeue(): ScheduledUpdate | undefined {
+    return this.queue.shift();
+  }
+  isEmpty() {
+    return this.queue.length === 0;
+  }
+}
+
 export class BinaryDOMRenderer {
   private root: BinaryDOMNode | null = null;
   private container: Element;
@@ -11,6 +42,8 @@ export class BinaryDOMRenderer {
   private pendingUpdates: (() => void)[] = [];
   private scheduled = false;
   private domNodeMap = new WeakMap<HTMLElement, BinaryDOMNode>();
+  private updateQueue = new PriorityQueue();
+  private currentPriority: PriorityLevel = PRIORITY.NORMAL;
 
   constructor(container: Element) {
     this.container = container;
@@ -39,21 +72,39 @@ export class BinaryDOMRenderer {
 
   private workLoop(deadline: IdleDeadline): void {
     let shouldYield = false;
+    let unitsProcessed = 0;
+    const MAX_UNITS_PER_FRAME = 50; // Tune for responsiveness
+
+    // Process high-priority updates first
+    while (!this.updateQueue.isEmpty() && !shouldYield) {
+      const update = this.updateQueue.dequeue();
+      if (update) {
+        this.currentPriority = update.priority;
+        update.callback();
+        unitsProcessed++;
+        shouldYield =
+          deadline.timeRemaining() < 1 || unitsProcessed >= MAX_UNITS_PER_FRAME;
+      }
+    }
+
+    // Continue with fiber work if no high-priority updates
     while (this.nextUnitOfWork && !shouldYield) {
       this.nextUnitOfWork = this.performUnitOfWork(this.nextUnitOfWork);
-      shouldYield = deadline.timeRemaining() < 1;
+      unitsProcessed++;
+      shouldYield =
+        deadline.timeRemaining() < 1 || unitsProcessed >= MAX_UNITS_PER_FRAME;
     }
 
     if (!this.nextUnitOfWork && this.workInProgress) {
       this.commitRoot();
     }
 
-    // Only schedule the next work loop if there is still work to do
-    if (this.nextUnitOfWork) {
+    if (this.nextUnitOfWork || !this.updateQueue.isEmpty()) {
       this.scheduleWork(this.workLoop.bind(this));
     } else if (this.pendingUpdates.length > 0) {
-      // If work is done but pending updates exist, commit them
       this.commitBatchedUpdates();
+    } else {
+      this.scheduled = false;
     }
   }
 
@@ -575,6 +626,19 @@ export class BinaryDOMRenderer {
       updateQueue: props.updateQueue ?? null,
       flags: props.flags ?? 0,
     };
+  }
+
+  // Schedule an update with a given priority
+  public scheduleUpdateWithPriority(
+    fiber: BinaryDOMNode,
+    priority: PriorityLevel,
+    callback: () => void
+  ) {
+    this.updateQueue.enqueue({ fiber, priority, callback });
+    if (!this.scheduled) {
+      this.scheduled = true;
+      this.scheduleWork(this.workLoop.bind(this));
+    }
   }
 }
 
