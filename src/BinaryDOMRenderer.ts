@@ -670,6 +670,18 @@ export class BinaryDOMRenderer {
       this.scheduleWork(this.workLoop.bind(this));
     }
   }
+
+  public createElement(node: BinaryDOMNode): HTMLElement {
+    const element = document.createElement(node.type as string);
+    element.setAttribute('data-binary-id', node.id);
+    
+    // Set attributes
+    node.attributes.forEach((value, key) => {
+      element.setAttribute(key, value);
+    });
+    
+    return element;
+  }
 }
 
 function isFunctionComponent(

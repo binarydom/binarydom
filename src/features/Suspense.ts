@@ -76,6 +76,24 @@ export class Suspense extends BinaryDOMComponent<SuspenseProps, SuspenseState> {
 
     return this.props.children;
   }
+
+  update(newElement: BinaryDOMNode): void {
+    if (typeof newElement.type === "function" && newElement.props) {
+      const props = newElement.props as unknown as SuspenseProps;
+      if ('fallback' in props && 'children' in props) {
+        this.props = props;
+        this.setState({ isLoading: true });
+        this.loadChildren().then(() => {
+          this.setState({ isLoading: false });
+        }).catch(error => {
+          this.setState({
+            isLoading: false,
+            error: error instanceof Error ? error : new Error(String(error))
+          });
+        });
+      }
+    }
+  }
 }
 
 export function lazy(loader: () => Promise<any>) {

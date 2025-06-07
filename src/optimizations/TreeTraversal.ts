@@ -31,7 +31,7 @@ export class OptimizedTreeTraversal {
     // Cache the traversal result
     if (this.traversalCache.size >= this.CACHE_SIZE) {
       const firstKey = this.traversalCache.keys().next().value;
-      this.traversalCache.delete(firstKey);
+      if (firstKey) this.traversalCache.delete(firstKey);
     }
     this.traversalCache.set(cacheKey, visited);
   }
@@ -55,7 +55,7 @@ export class OptimizedTreeTraversal {
     if (result) {
       if (this.nodeCache.size >= this.CACHE_SIZE) {
         const firstKey = this.nodeCache.keys().next().value;
-        this.nodeCache.delete(firstKey);
+        if (firstKey) this.nodeCache.delete(firstKey);
       }
       this.nodeCache.set(cacheKey, result);
     }
