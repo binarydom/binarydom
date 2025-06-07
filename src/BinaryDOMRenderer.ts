@@ -1,4 +1,5 @@
 import { BinaryDOMNode, BinaryDOMProps, NodeType } from "./types/BinaryDOMNode";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 
 // Priority levels
 const PRIORITY = {
@@ -139,12 +140,41 @@ export class BinaryDOMRenderer {
           : [];
       this.reconcileChildren(fiber, children);
     } catch (error) {
-      // Optionally, mark this fiber as errored or render a fallback
-      fiber.effectTag = "ERROR";
-      // You could also dispatch a global error event or call a callback here
-      // For now, just log:
-      console.error("Error in function component:", error);
+      // Find the nearest error boundary
+      const errorBoundary = ErrorBoundary.findNearestErrorBoundary(fiber);
+
+      if (errorBoundary) {
+        // Let the error boundary handle the error
+        errorBoundary.handleError(error as Error, {
+          componentStack: this.getComponentStack(fiber),
+        });
+
+        // Re-render the error boundary with the fallback UI
+        const fallbackNode = errorBoundary.render();
+        this.reconcileChildren(fiber, [fallbackNode]);
+      } else {
+        // No error boundary found, mark as error and log
+        fiber.effectTag = "ERROR";
+        console.error("Uncaught error in function component:", error);
+        console.error("Component stack:", this.getComponentStack(fiber));
+      }
     }
+  }
+
+  private getComponentStack(fiber: BinaryDOMNode | null): string {
+    const stack: string[] = [];
+    let currentFiber = fiber;
+
+    while (currentFiber) {
+      const componentName =
+        typeof currentFiber.type === "function"
+          ? currentFiber.type.name || "Anonymous"
+          : currentFiber.type;
+      stack.unshift(componentName);
+      currentFiber = currentFiber.fiber?.return || null;
+    }
+
+    return stack.join(" > ");
   }
 
   private updateHostComponent(fiber: BinaryDOMNode): void {
