@@ -45,6 +45,11 @@ export class BinaryDOMRenderer {
   private domNodeMap = new WeakMap<HTMLElement, BinaryDOMNode>();
   private updateQueue = new PriorityQueue();
   private currentPriority: PriorityLevel = PRIORITY.NORMAL;
+  private batchUpdates: Map<string, any[]> = new Map();
+  private updateQueue: Set<string> = new Set();
+  private isBatching: boolean = false;
+  private eventDelegationMap: Map<string, Set<BinaryDOMNode>> = new Map();
+  private eventHandlerCache: Map<string, Function> = new Map();
 
   constructor(container: Element) {
     this.container = container;
@@ -441,13 +446,14 @@ export class BinaryDOMRenderer {
       dom.setAttribute("data-binary-id", fiber.id);
       this.updateDom(dom, {}, fiber.props);
       this.domNodeMap.set(dom, fiber);
-    }
-
-    // Setup event delegation for this node's event handlers
-    if (dom instanceof HTMLElement && fiber.eventHandlers) {
-      fiber.eventHandlers.forEach((handler, eventType) => {
-        this.setupEventDelegation(eventType);
-      });
+      
+      // Setup event delegation for this node's event handlers
+      if (fiber.eventHandlers) {
+        for (const eventType of fiber.eventHandlers.keys()) {
+          this.setupEventDelegation(eventType);
+          this.eventDelegationMap.get(eventType)!.add(fiber);
+        }
+      }
     }
 
     return dom;
@@ -577,29 +583,98 @@ export class BinaryDOMRenderer {
   }
 
   private setupEventDelegation(eventType: string) {
-    if (this.delegatedEvents.has(eventType)) return;
-    this.delegatedEvents.add(eventType);
+    if (!this.eventDelegationMap.has(eventType)) {
+      this.eventDelegationMap.set(eventType, new Set());
+      
+      // Create cached event handler
+      const handler = this.createDelegatedHandler(eventType);
+      this.eventHandlerCache.set(eventType, handler);
+      
+      // Add event listener to container
+      this.container.addEventListener(eventType, handler, {
+        capture: true,
+        passive: true
+      });
+    }
+  }
 
-    this.container.addEventListener(eventType, (event: Event) => {
-      let target = event.target as HTMLElement | null;
-      while (target && target !== this.container) {
-        // Use WeakMap for faster lookup if possible, fallback to data attribute
-        const node =
-          this.domNodeMap.get(target) ||
-          this.findNodeById(
-            target.getAttribute("data-binary-id") || "",
-            this.currentRoot
-          );
-
-        if (node && node.eventHandlers.has(eventType)) {
-          node.eventHandlers.get(eventType)!(event);
-          // Stop propagation if handler returns false or explicitly calls stopPropagation
-          if ((event as any).isPropagationStopped) break; // Custom flag for stopPropagation
-          if ((event as any)._binarydom_stopPropagation) break; // Another custom flag example
+  private createDelegatedHandler(eventType: string): Function {
+    return (event: Event) => {
+      const path = event.composedPath();
+      const target = event.target as HTMLElement;
+      
+      // Find the closest BinaryDOMNode
+      let currentElement = target;
+      while (currentElement && currentElement !== this.container) {
+        const binaryId = currentElement.getAttribute('data-binary-id');
+        if (binaryId) {
+          const node = this.findNodeById(binaryId, this.root);
+          if (node) {
+            // Check if node has handler for this event
+            const handler = node.eventHandlers.get(eventType.toLowerCase());
+            if (handler) {
+              // Create synthetic event
+              const syntheticEvent = this.createSyntheticEvent(event, node);
+              
+              // Call handler with synthetic event
+              handler(syntheticEvent);
+              
+              // Stop propagation if event was handled
+              if (syntheticEvent.isPropagationStopped) {
+                event.stopPropagation();
+              }
+              
+              // Prevent default if event was handled
+              if (syntheticEvent.isDefaultPrevented) {
+                event.preventDefault();
+              }
+              
+              break;
+            }
+          }
         }
-        target = target.parentElement;
+        currentElement = currentElement.parentElement!;
       }
-    });
+    };
+  }
+
+  private createSyntheticEvent(nativeEvent: Event, node: BinaryDOMNode): any {
+    const syntheticEvent = {
+      nativeEvent,
+      target: nativeEvent.target,
+      currentTarget: node,
+      preventDefault() {
+        this.isDefaultPrevented = true;
+      },
+      stopPropagation() {
+        this.isPropagationStopped = true;
+      },
+      isDefaultPrevented: false,
+      isPropagationStopped: false,
+      // Add other event properties as needed
+    };
+    
+    // Copy native event properties
+    for (const key in nativeEvent) {
+      if (typeof nativeEvent[key] !== 'function') {
+        syntheticEvent[key] = nativeEvent[key];
+      }
+    }
+    
+    return syntheticEvent;
+  }
+
+  private cleanupEventDelegation() {
+    // Remove all event listeners
+    for (const [eventType, handler] of this.eventHandlerCache) {
+      this.container.removeEventListener(eventType, handler as EventListener, {
+        capture: true,
+        passive: true
+      });
+    }
+    
+    this.eventDelegationMap.clear();
+    this.eventHandlerCache.clear();
   }
 
   private findNodeById(
@@ -681,6 +756,130 @@ export class BinaryDOMRenderer {
     });
     
     return element;
+  }
+
+  private scheduleUpdate(nodeId: string, update: any) {
+    if (!this.batchUpdates.has(nodeId)) {
+      this.batchUpdates.set(nodeId, []);
+    }
+    this.batchUpdates.get(nodeId)!.push(update);
+    this.updateQueue.add(nodeId);
+    
+    if (!this.isBatching) {
+      this.isBatching = true;
+      requestAnimationFrame(() => this.flushUpdates());
+    }
+  }
+
+  private flushUpdates() {
+    this.isBatching = false;
+    
+    // Process updates in order of dependency
+    const sortedUpdates = this.sortUpdatesByDependency();
+    
+    for (const nodeId of sortedUpdates) {
+      const updates = this.batchUpdates.get(nodeId) || [];
+      for (const update of updates) {
+        this.applyChange(update);
+      }
+    }
+    
+    this.batchUpdates.clear();
+    this.updateQueue.clear();
+  }
+
+  private sortUpdatesByDependency(): string[] {
+    const visited = new Set<string>();
+    const sorted: string[] = [];
+    
+    const visit = (nodeId: string) => {
+      if (visited.has(nodeId)) return;
+      visited.add(nodeId);
+      
+      const node = this.findNodeById(nodeId, this.root);
+      if (node?.left) visit(node.left.id);
+      if (node?.right) visit(node.right.id);
+      
+      sorted.push(nodeId);
+    };
+    
+    for (const nodeId of this.updateQueue) {
+      visit(nodeId);
+    }
+    
+    return sorted;
+  }
+
+  private diff(oldTree: BinaryDOMNode, newTree: BinaryDOMNode): any[] {
+    const changes: any[] = [];
+    
+    // Fast path: If checksums match, no changes needed
+    if (oldTree.checksum === newTree.checksum) {
+      return changes;
+    }
+    
+    // Compare attributes with optimized iteration
+    if (oldTree.type === "element" && newTree.type === "element") {
+      const oldAttrs = oldTree.attributes;
+      const newAttrs = newTree.attributes;
+      
+      // Check for removed or changed attributes
+      for (const [key, value] of oldAttrs) {
+        if (!newAttrs.has(key) || newAttrs.get(key) !== value) {
+          changes.push({
+            type: "UPDATE_ATTRIBUTE",
+            node: oldTree,
+            attribute: key,
+            value: newAttrs.get(key) || null,
+          });
+        }
+      }
+      
+      // Check for new attributes
+      for (const [key, value] of newAttrs) {
+        if (!oldAttrs.has(key)) {
+          changes.push({
+            type: "UPDATE_ATTRIBUTE",
+            node: oldTree,
+            attribute: key,
+            value,
+          });
+        }
+      }
+    }
+    
+    // Compare children with binary tree optimization
+    if (oldTree.left && newTree.left) {
+      changes.push(...this.diff(oldTree.left, newTree.left));
+    } else if (newTree.left) {
+      changes.push({
+        type: "INSERT_NODE",
+        parent: oldTree,
+        node: newTree.left,
+      });
+    } else if (oldTree.left) {
+      changes.push({
+        type: "REMOVE_NODE",
+        node: oldTree.left,
+      });
+    }
+    
+    if (oldTree.right && newTree.right) {
+      changes.push(...this.diff(oldTree.right, newTree.right));
+    } else if (newTree.right) {
+      changes.push({
+        type: "INSERT_NODE",
+        parent: oldTree,
+        node: newTree.right,
+      });
+    } else if (oldTree.right) {
+      changes.push({
+        type: "REMOVE_NODE",
+        node: oldTree.right,
+      });
+    }
+    
+    return changes;
   }
 }
 

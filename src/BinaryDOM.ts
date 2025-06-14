@@ -9,6 +9,8 @@ export class BinaryDOM {
   public root: BinaryDOMNode | null = null;
   private options: BinaryDOMOptions;
   private hashFunction: any;
+  private nodePool: BinaryDOMNode[] = [];
+  private maxPoolSize: number = 1000;
 
   constructor(options: BinaryDOMOptions = {}) {
     this.options = {
@@ -17,10 +19,60 @@ export class BinaryDOM {
       maxBatchSize: 1000,
       ...options,
     };
+    this.startCleanupInterval();
   }
 
   async initialize() {
     this.hashFunction = await xxhash();
+  }
+
+  private getNodeFromPool(): BinaryDOMNode {
+    if (this.nodePool.length > 0) {
+      return this.nodePool.pop()!;
+    }
+    return this.createNode("element");
+  }
+
+  private returnNodeToPool(node: BinaryDOMNode) {
+    if (this.nodePool.length < this.maxPoolSize) {
+      // Reset node state
+      node.left = null;
+      node.right = null;
+      node.parent = null;
+      node.children = [];
+      node.attributes.clear();
+      node.eventHandlers.clear();
+      node.hooks = [];
+      node.state = null;
+      node.isDirty = false;
+      node.checksum = 0;
+      
+      this.nodePool.push(node);
+    }
+  }
+
+  private cleanupUnusedNodes(node: BinaryDOMNode | null) {
+    if (!node) return;
+    
+    // Recursively cleanup children
+    if (node.left) {
+      this.cleanupUnusedNodes(node.left);
+    }
+    if (node.right) {
+      this.cleanupUnusedNodes(node.right);
+    }
+    
+    // Check if node is still in use
+    if (!node.isDirty && !this.isNodeReferenced(node)) {
+      this.returnNodeToPool(node);
+    }
+  }
+
+  private isNodeReferenced(node: BinaryDOMNode): boolean {
+    // Check if node is referenced by any event handlers or state
+    return node.eventHandlers.size > 0 || 
+           node.hooks.length > 0 || 
+           node.state !== null;
   }
 
   private createNode(
@@ -28,23 +80,23 @@ export class BinaryDOM {
     tagName?: string,
     value?: string
   ): BinaryDOMNode {
-    return {
-      id: Math.random().toString(36).substring(2, 11),
-      type,
-      tagName,
-      props: {},
-      attributes: new Map(),
-      children: [],
-      left: null,
-      right: null,
-      checksum: 0,
-      isDirty: false,
-      parent: null,
-      value,
-      eventHandlers: new Map(),
-      state: null,
-      hooks: [],
-    };
+    const node = this.getNodeFromPool();
+    
+    // Initialize node properties
+    node.id = Math.random().toString(36).substring(2, 11);
+    node.type = type;
+    node.tagName = tagName;
+    node.value = value;
+    
+    return node;
+  }
+
+  private startCleanupInterval() {
+    setInterval(() => {
+      if (this.root) {
+        this.cleanupUnusedNodes(this.root);
+      }
+    }, 5000); // Run cleanup every 5 seconds
   }
 
   private computeChecksum(node: BinaryDOMNode): number {
@@ -60,6 +112,66 @@ export class BinaryDOM {
     return this.hashFunction(data);
   }
 
+  private balanceTree(node: BinaryDOMNode): BinaryDOMNode {
+    const balance = this.getBalance(node);
+    
+    // Left Left Case
+    if (balance > 1 && this.getBalance(node.left!) < 0) {
+      node.left = this.rotateLeft(node.left!);
+      return this.rotateRight(node);
+    }
+    
+    // Right Right Case
+    if (balance < -1 && this.getBalance(node.right!) > 0) {
+      node.right = this.rotateRight(node.right!);
+      return this.rotateLeft(node);
+    }
+    
+    // Left Right Case
+    if (balance > 1 && this.getBalance(node.left!) >= 0) {
+      return this.rotateRight(node);
+    }
+    
+    // Right Left Case
+    if (balance < -1 && this.getBalance(node.right!) <= 0) {
+      return this.rotateLeft(node);
+    }
+    
+    return node;
+  }
+
+  private getBalance(node: BinaryDOMNode): number {
+    return this.getHeight(node.left) - this.getHeight(node.right);
+  }
+
+  private getHeight(node: BinaryDOMNode | null): number {
+    if (!node) return 0;
+    return 1 + Math.max(
+      this.getHeight(node.left),
+      this.getHeight(node.right)
+    );
+  }
+
+  private rotateRight(node: BinaryDOMNode): BinaryDOMNode {
+    const left = node.left!;
+    const rightOfLeft = left.right;
+    
+    left.right = node;
+    node.left = rightOfLeft;
+    
+    return left;
+  }
+
+  private rotateLeft(node: BinaryDOMNode): BinaryDOMNode {
+    const right = node.right!;
+    const leftOfRight = right.left;
+    
+    right.left = node;
+    node.right = leftOfRight;
+    
+    return right;
+  }
+
   public buildBinaryTree(element: Element): BinaryDOMNode {
     const node = this.createNode("element", element.tagName.toLowerCase());
 
@@ -68,17 +180,25 @@ export class BinaryDOM {
       node.attributes.set(attr.name, attr.value);
     });
 
-    // Process children
+    // Process children with balanced tree
     const children = Array.from(element.children);
     if (children.length > 0) {
-      node.left = this.buildBinaryTree(children[0]);
+      const mid = Math.floor(children.length / 2);
+      node.left = this.buildBinaryTree(children[mid]);
       node.left.parent = node;
-
-      let current = node.left;
-      for (let i = 1; i < children.length; i++) {
-        current.right = this.buildBinaryTree(children[i]);
-        current.right.parent = current;
-        current = current.right;
+      
+      // Process left subtree
+      for (let i = mid - 1; i >= 0; i--) {
+        const leftNode = this.buildBinaryTree(children[i]);
+        leftNode.parent = node;
+        node.left = this.balanceTree(node.left);
+      }
+      
+      // Process right subtree
+      for (let i = mid + 1; i < children.length; i++) {
+        const rightNode = this.buildBinaryTree(children[i]);
+        rightNode.parent = node;
+        node.right = this.balanceTree(node.right);
       }
     }
 
@@ -88,7 +208,7 @@ export class BinaryDOM {
     // Compute checksum
     node.checksum = this.computeChecksum(node);
 
-    return node;
+    return this.balanceTree(node);
   }
 
   public mount(element: Element) {
