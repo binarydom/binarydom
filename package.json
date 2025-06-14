@@ -1,44 +1,50 @@
 {
   "name": "binarydom",
-  "version": "0.1.0",
-  "description": "A lightweight, high-performance DOM manipulation library",
+  "version": "1.0.0",
+  "description": "High-performance DOM implementation using binary tree optimization",
   "main": "dist/index.js",
+  "module": "dist/index.esm.js",
   "types": "dist/index.d.ts",
-  "bin": {
-    "binarydom": "./dist/cli/index.js"
-  },
+  "files": [
+    "dist"
+  ],
   "scripts": {
-    "build": "tsc",
-    "dev": "tsc -w",
+    "build": "rollup -c",
+    "build:types": "tsc --emitDeclarationOnly",
+    "clean": "rimraf dist",
+    "dev": "rollup -c -w",
     "test": "jest",
     "lint": "eslint src --ext .ts",
-    "format": "prettier --write \"src/**/*.ts\""
+    "format": "prettier --write \"src/**/*.ts\"",
+    "prepare": "npm run clean && npm run build"
   },
   "keywords": [
     "dom",
     "virtual-dom",
     "binary-tree",
-    "typescript",
-    "javascript"
+    "performance",
+    "typescript"
   ],
   "author": "",
   "license": "MIT",
   "devDependencies": {
-    "@types/jest": "^29.2.0",
-    "@types/mime-types": "^2.1.1",
-    "@types/node": "^18.0.0",
-    "@typescript-eslint/eslint-plugin": "^5.0.0",
-    "@typescript-eslint/parser": "^5.0.0",
+    "@rollup/plugin-commonjs": "^25.0.0",
+    "@rollup/plugin-node-resolve": "^15.0.0",
+    "@rollup/plugin-terser": "^0.4.0",
+    "@rollup/plugin-typescript": "^11.0.0",
+    "@types/jest": "^29.0.0",
+    "@types/node": "^20.0.0",
+    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "@typescript-eslint/parser": "^6.0.0",
     "eslint": "^8.0.0",
-    "jest": "^29.2.0",
-    "prettier": "^2.0.0",
+    "jest": "^29.0.0",
+    "prettier": "^3.0.0",
+    "rimraf": "^5.0.0",
+    "rollup": "^3.0.0",
     "ts-jest": "^29.0.0",
-    "typescript": "^4.9.0"
+    "typescript": "^5.0.0"
   },
   "dependencies": {
-    "commander": "^9.4.0",
-    "esbuild": "^0.17.0",
-    "mime-types": "^2.1.35",
-    "vite": "^4.0.0"
+    "xxhash-wasm": "^1.0.0"
   }
 }
