@@ -1,4 +1,4 @@
-import { BinaryDOMNode, BinaryDOMProps, NodeType } from "./types/BinaryDOMNode";
+import { BinaryDOMNode, BinaryDOMProps } from "./types/BinaryDOMNode";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 
 // Priority levels
@@ -46,7 +46,8 @@ export class BinaryDOMRenderer {
   private updateQueue = new PriorityQueue();
   private currentPriority: PriorityLevel = PRIORITY.NORMAL;
   private batchUpdates: Map<string, any[]> = new Map();
-  private updateQueue: Set<string> = new Set();
+  private pendingNodeUpdates: Set<string> = new Set();
+  private pendingFunctionUpdates: (() => void)[] = [];
   private isBatching: boolean = false;
   private eventDelegationMap: Map<string, Set<BinaryDOMNode>> = new Map();
   private eventHandlerCache: Map<string, Function> = new Map();
@@ -591,7 +592,7 @@ export class BinaryDOMRenderer {
       this.eventHandlerCache.set(eventType, handler);
       
       // Add event listener to container
-      this.container.addEventListener(eventType, handler, {
+      this.container.addEventListener(eventType as keyof ElementEventMap, handler as EventListener, {
         capture: true,
         passive: true
       });
@@ -651,13 +652,13 @@ export class BinaryDOMRenderer {
       },
       isDefaultPrevented: false,
       isPropagationStopped: false,
-      // Add other event properties as needed
     };
     
-    // Copy native event properties
-    for (const key in nativeEvent) {
-      if (typeof nativeEvent[key] !== 'function') {
-        syntheticEvent[key] = nativeEvent[key];
+    // Copy known event properties
+    const knownProps = ['type', 'bubbles', 'cancelable', 'timeStamp', 'defaultPrevented', 'eventPhase'];
+    for (const prop of knownProps) {
+      if (prop in nativeEvent) {
+        (syntheticEvent as any)[prop] = (nativeEvent as any)[prop];
       }
     }
     
@@ -667,9 +668,8 @@ export class BinaryDOMRenderer {
   private cleanupEventDelegation() {
     // Remove all event listeners
     for (const [eventType, handler] of this.eventHandlerCache) {
-      this.container.removeEventListener(eventType, handler as EventListener, {
-        capture: true,
-        passive: true
+      this.container.removeEventListener(eventType as keyof ElementEventMap, handler as EventListener, {
+        capture: true
       });
     }
     
@@ -697,7 +697,7 @@ export class BinaryDOMRenderer {
   }
 
   private scheduleUpdate(fn: () => void) {
-    this.pendingUpdates.push(fn);
+    this.pendingFunctionUpdates.push(fn);
     if (!this.scheduled) {
       this.scheduled = true;
       requestAnimationFrame(() => {
@@ -707,8 +707,8 @@ export class BinaryDOMRenderer {
   }
 
   private commitBatchedUpdates() {
-    this.pendingUpdates.forEach((f) => f());
-    this.pendingUpdates = [];
+    this.pendingFunctionUpdates.forEach((f) => f());
+    this.pendingFunctionUpdates = [];
     this.scheduled = false;
     // After committing DOM updates, check if there is still work to do
     if (this.nextUnitOfWork) {
@@ -758,12 +758,12 @@ export class BinaryDOMRenderer {
     return element;
   }
 
-  private scheduleUpdate(nodeId: string, update: any) {
+  private scheduleNodeUpdate(nodeId: string, update: any) {
     if (!this.batchUpdates.has(nodeId)) {
       this.batchUpdates.set(nodeId, []);
     }
     this.batchUpdates.get(nodeId)!.push(update);
-    this.updateQueue.add(nodeId);
+    this.pendingNodeUpdates.add(nodeId);
     
     if (!this.isBatching) {
       this.isBatching = true;
@@ -785,7 +785,7 @@ export class BinaryDOMRenderer {
     }
     
     this.batchUpdates.clear();
-    this.updateQueue.clear();
+    this.pendingNodeUpdates.clear();
   }
 
   private sortUpdatesByDependency(): string[] {
@@ -803,11 +803,36 @@ export class BinaryDOMRenderer {
       sorted.push(nodeId);
     };
     
-    for (const nodeId of this.updateQueue) {
+    for (const nodeId of this.pendingNodeUpdates) {
       visit(nodeId);
     }
     
     return sorted;
+  }
+
+  private applyChange(update: any) {
+    const node = this.findNodeById(update.node.id, this.root);
+    if (!node || !node.dom) return;
+
+    switch (update.type) {
+      case 'UPDATE_ATTRIBUTE':
+        if (update.value === null) {
+          (node.dom as HTMLElement).removeAttribute(update.attribute);
+        } else {
+          (node.dom as HTMLElement).setAttribute(update.attribute, update.value);
+        }
+        break;
+      case 'INSERT_NODE':
+        if (update.parent.dom) {
+          update.parent.dom.appendChild(update.node.dom);
+        }
+        break;
+      case 'REMOVE_NODE':
+        if (update.node.dom && update.node.dom.parentNode) {
+          update.node.dom.parentNode.removeChild(update.node.dom);
+        }
+        break;
+    }
   }
 
   private diff(oldTree: BinaryDOMNode, newTree: BinaryDOMNode): any[] {
